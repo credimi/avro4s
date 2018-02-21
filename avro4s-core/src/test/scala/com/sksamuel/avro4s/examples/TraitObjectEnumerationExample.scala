@@ -1,5 +1,6 @@
 package com.sksamuel.avro4s.examples
 
+import com.sksamuel.avro4s.{SchemaFor, ToRecord}
 import org.scalatest.{Matchers, WordSpec}
 
 import scala.util.Failure
@@ -39,6 +40,8 @@ class TraitObjectEnumerationExample extends WordSpec with Matchers {
 
     "serialize as string" in {
       val baos = new ByteArrayOutputStream()
+      implicit val schemaFor = SchemaFor[Test]
+      val a  = ToRecord[Test]
       val output = AvroOutputStream.json[Test](baos)
       output.write(Test(A))
       output.close()

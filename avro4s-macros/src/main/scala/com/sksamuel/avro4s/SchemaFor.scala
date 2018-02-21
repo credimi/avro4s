@@ -3,6 +3,7 @@ package com.sksamuel.avro4s
 import java.time.{LocalDate, LocalDateTime}
 import java.util
 
+
 import org.apache.avro.Schema.Field
 import org.apache.avro.{JsonProperties, LogicalTypes, Schema, SchemaBuilder}
 import shapeless.ops.coproduct.Reify
@@ -23,21 +24,61 @@ trait ToSchema[T] {
   def apply(): Schema = schema
 }
 
-trait LowPriorityToSchema {
+private[avro4s] trait SchemaUnions {
+
+
+  /**
+    * Creates a new Avro Schema by combining the given schemas into a union.
+    */
+  private[avro4s] def createUnion(schemas: Schema*): Schema = {
+    import scala.util.{Failure, Success, Try}
+
+    // union schemas can't contain other union schemas as a direct
+    // child, so whenever we create a union, we need to check if our
+    // children are unions
+
+    // if they are, we just merge them into the union we're creating
+
+    def schemasOf(schema: Schema): Seq[Schema] = Try(schema.getTypes /* throws an error if we're not a union */) match {
+      case Success(subschemas) => subschemas.asScala
+      case Failure(_) => Seq(schema)
+    }
+
+    def moveNullToHead(schemas: Seq[Schema]) = {
+      val (nulls, withoutNull) = schemas.partition(_.getType == Schema.Type.NULL)
+      nulls.headOption.toSeq ++ withoutNull
+    }
+
+    val subschemas = schemas.flatMap(schemasOf)
+    Schema.createUnion(moveNullToHead(subschemas).asJava)
+  }
+
+}
+
+trait LowestPriorityToSchema {
 
   implicit def genCoproduct[T, C <: Coproduct](implicit gen: Generic.Aux[T, C],
                                                coproductSchema: ToSchema[C]): ToSchema[T] = new ToSchema[T] {
     protected val schema: Schema = coproductSchema()
   }
 
+}
+
+
+trait LowPriorityToSchema extends LowestPriorityToSchema{
+
+
+
   implicit def apply[T: Manifest](implicit schemaFor: SchemaFor[T]): ToSchema[T] = new ToSchema[T] {
     protected val schema = schemaFor()
   }
+
+
 }
 
 case class ScaleAndPrecisionAndRoundingMode(scale: Int, precision: Int, roundingMode: RoundingMode)
 
-object ToSchema extends LowPriorityToSchema {
+object ToSchema extends LowPriorityToSchema with SchemaUnions{
 
   implicit object BooleanToSchema extends ToSchema[Boolean] {
     protected val schema = Schema.create(Schema.Type.BOOLEAN)
@@ -151,6 +192,7 @@ object ToSchema extends LowPriorityToSchema {
     }
   }
 
+
   implicit def SetToSchema[S](implicit subschema: ToSchema[S]): ToSchema[Set[S]] = {
     new ToSchema[Set[S]] {
       protected val schema = Schema.createArray(subschema())
@@ -219,31 +261,6 @@ object ToSchema extends LowPriorityToSchema {
     }
   }
 
-  /**
-    * Creates a new Avro Schema by combining the given schemas into a union.
-    */
-  private def createUnion(schemas: Schema*): Schema = {
-    import scala.util.{Failure, Success, Try}
-
-    // union schemas can't contain other union schemas as a direct
-    // child, so whenever we create a union, we need to check if our
-    // children are unions
-
-    // if they are, we just merge them into the union we're creating
-
-    def schemasOf(schema: Schema): Seq[Schema] = Try(schema.getTypes /* throws an error if we're not a union */) match {
-      case Success(subschemas) => subschemas.asScala
-      case Failure(_) => Seq(schema)
-    }
-
-    def moveNullToHead(schemas: Seq[Schema]) = {
-      val (nulls, withoutNull) = schemas.partition(_.getType == Schema.Type.NULL)
-      nulls.headOption.toSeq ++ withoutNull
-    }
-
-    val subschemas = schemas.flatMap(schemasOf)
-    Schema.createUnion(moveNullToHead(subschemas).asJava)
-  }
 }
 
 @implicitNotFound("Could not find implicit SchemaFor[${T}]")
@@ -251,7 +268,39 @@ trait SchemaFor[T] {
   def apply(): org.apache.avro.Schema
 }
 
-object SchemaFor {
+trait LowestPrioritySchemaFor {
+
+  implicit def materialize[T]:SchemaFor[T] =  macro SchemaFor.applyImpl[T]
+
+
+}
+
+trait LowPrioritySchemaFor extends SchemaUnions with LowestPrioritySchemaFor{
+
+
+  implicit def CoproductBaseSchema[S](implicit subschema: SchemaFor[S]): SchemaFor[S :+: CNil] = new SchemaFor[S :+: CNil] {
+
+    override def apply(): Schema = createUnion(subschema())
+
+  }
+
+  // And here we continue the recursion up.
+  implicit def CoproductSchema[S, T <: Coproduct](implicit subschema: SchemaFor[S], coproductSchema: SchemaFor[T]): SchemaFor[S :+: T] = new SchemaFor[S :+: T] {
+
+
+    override def apply(): Schema = createUnion(subschema(), coproductSchema())
+
+    protected val schema = createUnion(subschema(), coproductSchema())
+  }
+
+  implicit def genCoproductSchemaFor[T, C <: Coproduct](implicit gen: Generic.Aux[T, C], coproductSchema: SchemaFor[C]): SchemaFor[T] = new SchemaFor[T] {
+    override def apply(): Schema = coproductSchema.apply()
+  }
+
+}
+
+
+object SchemaFor extends LowPrioritySchemaFor{
 
   implicit object ByteSchemaFor extends SchemaFor[Byte] {
     private val schema = SchemaBuilder.builder().intType()
@@ -301,7 +350,7 @@ object SchemaFor {
     }
   }
 
-  implicit def apply[T]: SchemaFor[T] = macro SchemaFor.applyImpl[T]
+  def apply[T](implicit schemaFor:SchemaFor[T]): SchemaFor[T] = schemaFor
 
   def applyImpl[T: c.WeakTypeTag](c: whitebox.Context): c.Expr[SchemaFor[T]] = {
     import c.universe
@@ -424,6 +473,7 @@ object SchemaFor {
       }
     }
   }
+
 
   def valueInvoker[T](implicit to: ToSchema[T]): org.apache.avro.Schema = to()
 

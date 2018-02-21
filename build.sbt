@@ -5,6 +5,8 @@
 publishArtifact := false
 publish := {}
 
+scalaVersion in ThisBuild := "2.11.12"
+
 val `avro4s-macros` = project.in(file("avro4s-macros"))
   .settings(libraryDependencies += "com.chuusai" %% "shapeless" % "2.3.2")
 

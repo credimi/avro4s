@@ -19,12 +19,19 @@ trait ToValue[A] {
   def apply(value: A): Any = value
 }
 
-trait LowPriorityToValue {
+
+trait LowestPriorityToValue {
 
   implicit def genCoproduct[T, C <: Coproduct](implicit gen: Generic.Aux[T, C],
                                                coproductToValue: ToValue[C]): ToValue[T] = new ToValue[T] {
     override def apply(value: T): Any = coproductToValue(gen.to(value))
   }
+
+}
+
+trait LowPriorityToValue extends LowestPriorityToValue {
+
+
 
   implicit def apply[T](implicit toRecord: ToRecord[T]): ToValue[T] = new ToValue[T] {
     override def apply(value: T): GenericRecord = toRecord(value)
@@ -38,10 +45,16 @@ object LowPriorityToValue {
   def fixedImpl[T: c.WeakTypeTag](c: scala.reflect.macros.whitebox.Context): c.Expr[ToValue[T]] = {
     import c.universe._
     val tpe = weakTypeTag[T].tpe
+    val tct = appliedType(symbolOf[SchemaFor[_]].toTypeConstructor, weakTypeOf[T] :: Nil)
+    val schemaForImplicit = c.inferImplicitValue(tct, silent = true, withMacrosDisabled = true)
+    if(schemaForImplicit == EmptyTree){
+      c.abort(c.enclosingPosition,s"Cannot find implicit for type $tct")
+    }
+    println(schemaForImplicit)
     c.Expr[ToValue[T]](
       q"""
         {
-          val schema = com.sksamuel.avro4s.SchemaFor[$tpe]()
+          val schema = $schemaForImplicit
           new com.sksamuel.avro4s.ToValue[$tpe] {
             override def apply(t: $tpe): org.apache.avro.generic.GenericFixed = {
               new org.apache.avro.generic.GenericData.Fixed(schema, t.bytes.array)
@@ -251,9 +264,16 @@ object ToRecord {
         }
     }
 
-    c.Expr[ToRecord[T]](
+    val tct = appliedType(symbolOf[SchemaFor[_]].toTypeConstructor, weakTypeOf[T] :: Nil)
+    val schemaForImplicit = c.inferImplicitValue(tct, silent = true, withMacrosDisabled = true)
+    if(schemaForImplicit == EmptyTree){
+      c.abort(c.enclosingPosition,s"Cannot find implicit for type $tct")
+    }
+    println(schemaForImplicit)
+
+    val expr = c.Expr[ToRecord[T]](
       q"""new _root_.com.sksamuel.avro4s.ToRecord[$tpe] {
-            private val schemaFor : _root_.com.sksamuel.avro4s.SchemaFor[$tpe] = _root_.com.sksamuel.avro4s.SchemaFor[$tpe]
+            private val schemaFor : _root_.com.sksamuel.avro4s.SchemaFor[$tpe] = $schemaForImplicit
             private val converters : Array[_root_.shapeless.Lazy[_root_.com.sksamuel.avro4s.ToValue[_]]] = Array(..$converters)
 
             def apply(t : $tpe): _root_.org.apache.avro.generic.GenericRecord = {
@@ -264,6 +284,8 @@ object ToRecord {
             }
           }"""
     )
+    println(expr)
+    expr
   }
 
   def lazyConverter[T](implicit toValue: Lazy[ToValue[T]]): Lazy[ToValue[T]] = toValue

@@ -23,7 +23,7 @@ object GlobalPlugin extends AutoPlugin {
     crossScalaVersions := Seq("2.11.12", "2.12.4"),
     resolvers += Resolver.mavenLocal,
     parallelExecution in Test := false,
-    scalacOptions := Seq("-unchecked", "-deprecation", "-encoding", "utf8", "-Ywarn-unused-import",
+    scalacOptions := Seq("-unchecked", "-deprecation", "-encoding", "utf8",
       "-Xfatal-warnings", "-feature", "-language:existentials"
     ),
     javacOptions := Seq("-source", "1.7", "-target", "1.7"),
